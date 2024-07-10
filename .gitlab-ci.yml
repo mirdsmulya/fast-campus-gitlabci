@@ -1,0 +1,50 @@
+stages:
+    - test
+    - build
+    - deploy
+
+workflow:
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+$/'
+
+variables:
+  GO_VERSION: "1.22"  # Specify the desired Go version
+  DOCKER_DRIVER: overlay2
+  AWS_DEFAULT_REGION: "ap-southeast-1"
+  ECR_REGISTRY: "675327529402.dkr.ecr.ap-southeast-1.amazonaws.com"
+  ECR_REPOSITORY: "fast-campus"
+  EKS_CLUSTER_NAME: "fast-campus-cluster"
+  KUBERNETES_NAMESPACE: "app"
+  HELM_CHART_PATH: "deployment/k8s"
+  HELM_CHART_NAME: "hello-world"
+
+unit-test:
+  stage: test
+  image: golang:$GO_VERSION
+  script:
+    - go mod download
+    - go test ./...
+
+build-and-push-image:
+  stage: build
+  image: mirdsmulya/aws-docker
+  variables:
+    DOCKER_HOST: "tcp://docker:2375"
+  services:
+    - docker:dind
+  before_script:
+    - echo $(aws ecr get-login-password --region $AWS_DEFAULT_REGION) | docker login --username AWS --password-stdin $ECR_REGISTRY
+  script:
+    - docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$CI_COMMIT_TAG .
+    - docker push $ECR_REGISTRY/$ECR_REPOSITORY:$CI_COMMIT_TAG
+
+deploy-to-eks:
+    stage: deploy
+    image: mirdsmulya/aws-helm
+    variables:
+        AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+        AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+    before_script:
+        - aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region $AWS_DEFAULT_REGION
+    script:
+        - helm upgrade --install $HELM_CHART_NAME $HELM_CHART_PATH -f $HELM_CHART_PATH/values.yaml --namespace $KUBERNETES_NAMESPACE --set image.tag=$CI_COMMIT_TAG
